@@ -1,5 +1,5 @@
 {
-  "display_name": "Test",
+  "display_name": "MinnaNoGamu",
   "version": 4,
   "code": [
     "const SWIDTH = 127;",
@@ -33,7 +33,7 @@
     "",
     "function draw()",
     "{",
-    "  cls(0);",
+    "  cls(9);",
     "  spr(0, x, y);",
     "}"
   ],
