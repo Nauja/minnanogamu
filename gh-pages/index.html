@@ -1,0 +1,2303 @@
+<html><head><meta charset="UTF-8"><script type="text/javascript">const rcn_static_bin_json = $RCN_STATIC_BIN;
+// Basic functionality, bootstrap, config
+'use strict';
+
+document.title = 'raccoon';
+
+const rcn = {
+  rom_size: 0x5000, // = 20KiB
+  ram_size: 0x8000, // = 32KiB
+  mem_spritesheet_offset: 0x0000,
+  mem_spritesheet_size: 0x1800, // 6KiB = 128x96x4bits
+  mem_map_offset: 0x1800,
+  mem_map_size: 0x2000, // 8KiB = 128x64x8bits
+  mem_palette_offset: 0x3800,
+  mem_palette_size: 0x0040, // 64B = 16x(24+1+3+4)bits (24bit RGB color + 1b transp + 3b reserved + 4b redir)
+  mem_spriteflags_offset: 0x3840,
+  mem_spriteflags_size: 0x00c0, // 192B = 192x8bits
+  mem_sound_offset: 0x3900,
+  mem_sound_size: 0x1080, // 4224B = 64x(8+2+6+(32x(2+6+2+3+3)))bits
+  mem_music_offset: 0x4980,
+  mem_music_size: 0x0100, // 256B = 64x(4x(1+1+6))bits
+  // ... 0x0580
+  // RAM/ROM limit
+  mem_network_offset: 0x5000,
+  mem_network_size: 0x0400, // 1024B
+  // ... 0x0b90
+  mem_cam_offset: 0x5f90,
+  mem_cam_size: 0x0004, // 4B = 2x16bits
+  mem_soundstate_offset: 0x5fa0,
+  mem_soundstate_size: 0x0018, // 20B = 4x(8+8+8+8+16)bits (8b index + 8b offset + 8b length + 8b loops + 16b time)
+  mem_musicstate_offset: 0x5fc0,
+  mem_musicstate_size: 0x0005, // 5B = 1+7+16+16bits (1b playing + 7b index + 16b time + 16b max_time)
+  mem_soundreg_offset: 0x5fd0,
+  mem_soundreg_size: 0x0010, // 16B = 4x(8+8+6+1+3+3)bits
+  mem_gamepad_offset: 0x5fe0,
+  mem_gamepad_size: 0x0018, // 24B = 2x8x(4+4)+8x8bits (4b directions + 4b buttons)
+  mem_screen_offset: 0x6000,
+  mem_screen_size: 0x2000, // 8KiB = 128x128x4bits
+
+  gamepad_count: 8,
+  map_width: 128,
+  map_height: 64,
+  music_count: 64,
+  music_track_count: 4,
+  sound_count: 64,
+  sound_note_count: 32,
+  sound_pitch_count: 64,
+
+  gamepad_layout_xcvb: 0,
+  gamepad_layout_abxy: 1,
+};
+
+let rcn_global_bin;
+const rcn_editors = []; // This gets filled with the constructors of each type of editor
+const rcn_hosts = {};
+const rcn_resources = {}; // This can be used to redirect URLs to ObjectURLs
+let rcn_clipboard;
+
+// Raccoon storage
+let rcn_storage = {}
+try {
+  rcn_storage = JSON.parse(localStorage.rcn);
+} catch(e) {
+  console.log('Could not read localStorage');
+  console.log(e);
+}
+window.addEventListener('unload', function() {
+  try {
+    localStorage.rcn = JSON.stringify(rcn_storage);
+  } catch(e) {
+    console.log('Could not write to localStorage');
+    console.log(e);
+  }
+})
+
+const rcn_get_parameters = (function() {
+  const params = {};
+  location.search.substr(1).split('&')
+  .forEach(function(item) {
+    const pair = item.split("=");
+    params[pair[0]] = decodeURIComponent(pair[1]);
+  });
+  return params;
+})();
+
+function rcn_resource(url) {
+  return rcn_resources[url] || url;
+}
+
+function rcn_load_scripts(scripts) {
+  return Promise.all(scripts.map(function(script) {
+    const script_node = document.createElement('script');
+    script_node.type = 'text/javascript';
+    script_node.src = 'src/js/'+script+'.js';
+    document.head.appendChild(script_node);
+    return new Promise(function(resolve) {
+      script_node.onload = resolve;
+    });
+  }));
+}
+function rcn_load_styles(styles) {
+  return Promise.all(styles.map(function(style) {
+    const style_node = document.createElement('link');
+    style_node.rel = 'stylesheet';
+    style_node.media = 'screen';
+    style_node.type = 'text/css';
+    style_node.href = 'src/css/'+style+'.css';
+    document.head.appendChild(style_node);
+    return new Promise(function(resolve) {
+      style_node.onload = resolve;
+    });
+  }));
+}
+
+async function rcn_bootstrap_game_mode(params) {
+  console.log('Bootstrapping game mode');
+  if(!params.export) {
+    await Promise.all([
+      rcn_load_styles(['game']),
+      rcn_load_scripts(['game']),
+    ]);
+  }
+  rcn_start_game_mode(params);
+}
+
+async function rcn_bootstrap_editor_mode(params) {
+  console.log('Bootstrapping editor mode');
+  await Promise.all([
+    rcn_load_styles([
+      'editor', 'window',
+      'ed/header',
+
+      'ed/anim_ed',
+      'ed/code_ed',
+      'ed/console_ed',
+      'ed/docs_ed',
+      'ed/map_ed',
+      'ed/music_ed',
+      'ed/sound_ed',
+      'ed/sprite_ed',
+      'ed/sprite_select_ed',
+      'ed/vm_ed',
+    ]),
+    rcn_load_scripts([
+      'editor', 'ui', 'window',
+      'ed/fill',
+      'ed/header',
+      'ed/music',
+
+      'ed/anim_ed',
+      'ed/code_ed',
+      'ed/console_ed',
+      'ed/docs_ed',
+      'ed/hover',
+      'ed/map_ed',
+      'ed/music_ed',
+      'ed/palette_ed',
+      'ed/selection',
+      'ed/sound_ed',
+      'ed/sprite_ed',
+      'ed/sprite_select_ed',
+      'ed/vm_ed',
+    ]),
+  ]);
+  rcn_start_editor_mode(params);
+}
+
+window.addEventListener('load', async function() {
+  if(typeof rcn_static_bin_json !== 'undefined') {
+    // We're in an export html
+    let static_bin = new rcn_bin();
+    static_bin.from_json(rcn_static_bin_json);
+    return rcn_start_game_mode({
+      bin: static_bin,
+      export: true,
+    });
+  }
+
+  await Promise.all([
+    rcn_load_styles(['reset']),
+    rcn_load_scripts([
+      // Raccoon core
+      'bin','vm','vm_worker',
+      // Utility
+      'audio','canvas','gl','http','network','utility',
+      // Extensions
+      'ext/github',
+    ]),
+  ]);
+
+  let bin = await rcn_bin_from_env();
+  if(bin) {
+    console.log('Loaded bin from environment');
+  }
+  if(bin && !rcn_get_parameters.edit) {
+    rcn_bootstrap_game_mode({
+      bin: bin,
+    });
+  } else {
+    rcn_bootstrap_editor_mode({
+      bin: bin,
+    });
+  }
+});
+
+// Raccoon audio context
+'use strict';
+
+const rcn_audio_context = new (window.AudioContext || window.webkitAudioContext)();
+const rcn_audio_channel_count = 4;
+const rcn_audio_sample_rate = 44100;
+const rcn_audio_buffer_size = rcn_audio_sample_rate / 30;
+const rcn_audio_latency = 1 / 30;
+const rcn_audio_frames_per_frame = 4;
+const rcn_audio_frames_per_second = rcn_audio_frames_per_frame * 30;
+const rcn_audio_ticks_per_measure = 32;
+const rcn_audio_ticks_per_beat = rcn_audio_ticks_per_measure / 4;
+const rcn_audio_bpm_per_period = (60 * rcn_audio_frames_per_second) / rcn_audio_ticks_per_beat;
+
+function rcn_audio() {
+  this.master_gain = rcn_audio_context.createGain();
+  this.master_gain.connect(rcn_audio_context.destination);
+
+  this.volume = 1;
+  this.play_time = this.last_update = 0;
+
+  this.channels = new Array(rcn_audio_channel_count);
+  for(let i = 0; i < rcn_audio_channel_count; i++) {
+    this.channels[i] = {
+      notes: [],
+    };
+  }
+}
+
+rcn_audio.prototype.kill = function() {
+  this.master_gain.disconnect();
+}
+
+rcn_audio.prototype.set_volume = function(volume) {
+  this.volume = volume;
+}
+
+rcn_audio.prototype.update = function(bytes) {
+  this.master_gain.gain.value = this.volume;
+
+  // Make sure the audio context is running
+  if(rcn_audio_context.state != 'running') {
+    rcn_audio_context.resume();
+    return;
+  }
+
+  // Suppress sound when updates are scarce (likely unfocused tab)
+  if(this.last_update < rcn_audio_context.currentTime - (2 / 30)) {
+    this.play_time = rcn_audio_context.currentTime;
+    this.last_update = rcn_audio_context.currentTime;
+    return;
+  } else {
+    this.last_update = rcn_audio_context.currentTime;
+  }
+
+  // Make sure we're not trying to cheat latency
+  while(this.play_time < rcn_audio_context.currentTime + rcn_audio_latency) {
+    this.play_time = rcn_audio_context.currentTime + rcn_audio_latency;
+  }
+
+  // Update channels with new notes
+  for(let i = 0; i < rcn_audio_channel_count; i++) {
+    const register_bytes = bytes.slice(i * 4, (i + 1) * 4);
+    const channel = this.channels[i];
+
+    if((register_bytes[0] & 0x80) == 0) {
+      // Register is switched off
+      continue;
+    }
+
+    const current_note = channel.notes.length > 0 ? channel.notes[0] : null;
+
+    const note = {
+      period: register_bytes[0] & 0x7f,
+      offset: register_bytes[2] >> 6,
+      envelope: register_bytes[1] >> 6,
+      instrument: register_bytes[1] & 0x3f,
+      pitch: register_bytes[2] & 0x3f,
+      volume: (register_bytes[3] & 0x7) / 7,
+      effect: (register_bytes[3] >> 3) & 0x7,
+    };
+
+    note.attack = [5, 5, 200, 200][note.envelope] / 1000;
+    note.decay = [0, 200, 0, 200][note.envelope] / 1000;
+    note.sustain = [1, 0.5, 1, 0.5][note.envelope];
+    note.release = [5, 50, 200, 200][note.envelope] / 1000;
+    note.start_time = this.play_time + note.offset / 120; // Divide by audio frames per second
+    note.duration = Math.max(note.period / 120, note.attack + note.decay)
+    note.end_time = note.start_time + note.duration + note.release;
+    note.phi = current_note ? current_note.phi : 0;
+
+    if(current_note &&
+      current_note.envelope == note.envelope &&
+      current_note.instrument == note.instrument &&
+      current_note.pitch == note.pitch &&
+      current_note.volume == note.volume &&
+      current_note.effect == note.effect) {
+      current_note.end_time = note.end_time;
+      current_note.duration = (current_note.end_time - current_note.start_time) - current_note.release;
+    } else {
+      channel.notes.unshift(note);
+    }
+
+    const play_time = this.play_time;
+    channel.notes = channel.notes.filter(function(note) {
+      return play_time < note.end_time + note.release;
+    });
+  }
+
+  // Create audio buffer for current frame
+  const buffer = rcn_audio_context.createBuffer(1, rcn_audio_buffer_size, rcn_audio_sample_rate);
+  const samples = buffer.getChannelData(0);
+  for (let i = 0; i < rcn_audio_buffer_size; i++) {
+    const t = this.play_time + (i / rcn_audio_sample_rate);
+
+    samples[i] = 0;
+    for(let j = 0; j < rcn_audio_channel_count; j++) {
+      const channel = this.channels[j];
+      for(let k = 0; k < channel.notes.length; k++) {
+        samples[i] += rcn_note_waveform(t, channel.notes[k], channel.notes.length > k+1 ? channel.notes[k+1] : null);
+      }
+    }
+
+    // Avoid saturation
+    samples[i] /= rcn_audio_channel_count;
+  }
+
+  // Play the buffer at some time in the future
+  const bsn = rcn_audio_context.createBufferSource();
+  bsn.buffer = buffer;
+  bsn.connect(this.master_gain);
+  bsn.start(this.play_time);
+
+  // Advance play time
+  this.play_time += rcn_audio_buffer_size / rcn_audio_sample_rate;
+}
+
+const rcn_max_pitch = 64;
+const rcn_pitch_to_freq = new Array(rcn_max_pitch);
+// Precompute array for performance
+for(let i = 0; i < rcn_max_pitch; i++) {
+  // Start at C1, but use A4 frequency as tuning
+  rcn_pitch_to_freq[i] =  440 * Math.pow(2, (i-45) / 12);
+}
+
+function rcn_note_waveform(t, note, previous_note) {
+  if(!note) {
+    return 0;
+  }
+
+  const offset_t = t - note.start_time;
+
+  if(offset_t < 0 || offset_t > note.duration + note.release) {
+    return 0;
+  }
+
+  const offset = offset_t / note.duration;
+  let frequency = rcn_pitch_to_freq[note.pitch];
+  let volume = note.volume;
+
+  switch(note.effect) {
+    case 1: // Slide
+      if(previous_note) {
+        frequency *= offset;
+        frequency += (1.0 - offset) * rcn_pitch_to_freq[previous_note.pitch];
+        volume = offset * note.volume + (1.0 - offset) * previous_note.volume;
+      }
+      break;
+    case 2: // Vibrato
+      frequency *= 1.0 + 0.04166 * (-Math.cos(offset * Math.PI * 2) / 2 + 0.5);
+      break;
+    case 3: // Drop
+      frequency *= 1.0 - offset;
+      break;
+    case 4: // Fadein
+      volume *= offset;
+      break;
+    case 5: // Fadeout
+      volume *= 1.0 - offset;
+      break;
+  }
+
+  { // Compute envelope
+    let adsr;
+    if(offset_t < note.attack) {
+      adsr = offset_t / note.attack;
+    } else if(offset_t < note.attack + note.decay) {
+      adsr = (((note.sustain - 1) / note.decay) * (offset_t - note.attack) + 1);
+    } else if(offset_t < note.duration) {
+      adsr = note.sustain;
+    } else {
+      adsr = ((note.release - offset_t + note.duration) / note.release) * note.sustain;
+    }
+    volume *= adsr;
+    volume = Math.max(volume, 0);
+  }
+
+  const instrument = rcn_instruments[note.instrument];
+  const waveform = instrument.waveform(note.phi % 1, note.phi) * volume;
+  note.phi += frequency / rcn_audio_sample_rate;
+  return waveform;
+}
+
+const rcn_instruments = [
+  {
+    name: 'Triangle',
+    waveform: function(t) {
+      return Math.abs(4 * t - 2) - 1;
+    },
+  },
+  {
+    name: 'Tilted Saw',
+    waveform: function(t) {
+      const a = 0.9;
+      return (t < a
+        ? 2 * t / a - 1
+        : 2 * (1 - t) / (1 - a) - 1) * 0.406;
+    },
+  },
+  {
+    name: 'Saw',
+    waveform: function(t) {
+      return 0.653 * (t < 0.5 ? t : t - 1);
+    },
+  },
+  {
+    name: 'Square',
+    waveform: function(t) {
+      return t < 0.5 ? 0.25 : -0.25;
+    },
+  },
+  {
+    name: 'Pulse',
+    waveform: function(t) {
+      return t < 0.33333333 ? 0.25 : -0.25;
+    },
+  },
+  {
+    name: 'Organ',
+    waveform: function(t) {
+      return (t < 0.5
+        ? 3 - Math.abs(24 * t - 6)
+        : 1 - Math.abs(16 * t - 12)) * 0.111111111;
+    },
+  },
+  {
+    name: 'Noise',
+    waveform: function(t) {
+      return Math.random() * 2 - 1;
+    },
+  },
+  {
+    name: 'Phaser',
+    waveform: function(t, adv) {
+      const k = Math.abs(2 * ((adv / 128) % 1) - 1);
+      const u = (t + 0.5 * k) % 1;
+      return (Math.abs(4 * u - 2) - Math.abs(8 * t - 4)) * 0.4;
+    },
+  },
+  {
+    name: 'Sine',
+    waveform: function(t) {
+      return Math.sin(t * Math.PI * 2);
+    },
+  },
+];
+
+// Bins are containers for raccoon software
+// They can be saved, shared, and loaded into a raccoon VM
+'use strict';
+
+const rcn_bin_token_regexp = /(\/\/.+|"((?:\\.|[^\\"])*)"|(\w+))/gm;
+const rcn_bin_non_tokens = {
+  const: true, let: true,
+};
+const rcn_bin_token_limit = 4096;
+const rcn_bin_current_version = 4;
+
+function rcn_bin() {
+  this.name = 'Untitled';
+  this.display_name = 'Untitled';
+  this.code = '';
+  this.rom = new Uint8Array(rcn.rom_size);
+
+  // Set default palette if in editor
+  if(typeof rcn_default_palettes !== 'undefined') {
+    this.rom.set(rcn_default_palettes.Raccoon, rcn.mem_palette_offset);
+  }
+}
+
+rcn_bin.prototype.clone = function() {
+  const bin_clone = new rcn_bin();
+  bin_clone.from_json(this.to_json());
+  return bin_clone;
+}
+
+rcn_bin.prototype.token_count = function() {
+  return [...this.code.matchAll(rcn_bin_token_regexp)]
+  .filter(function(m) {
+    return !m[0].startsWith('//') && !rcn_bin_non_tokens[m[0]];
+  }).length;
+}
+
+rcn_bin.prototype.from_json = function(bin) {
+  if(bin.version > 1 && bin.version <= rcn_bin_current_version) {
+    this.name = bin.name;
+    this.display_name = bin.display_name || bin.name;
+
+    let code = '';
+    bin.code.forEach(function(line) {
+      code += line + '\n';
+    });
+    this.code = code;
+
+    const hex_to_rom = function(rom, offset, hex_lines) {
+      if(hex_lines) {
+        hex_lines.forEach(function(hex_line) {
+          for(let j = 0; j < hex_line.length; j += 2) {
+            rom[offset++] = parseInt(hex_line.substr(j, 2), 16);
+          }
+        });
+      }
+    }
+    hex_to_rom(this.rom, rcn.mem_spritesheet_offset, bin.rom.spr);
+    hex_to_rom(this.rom, rcn.mem_map_offset, bin.rom.map);
+    hex_to_rom(this.rom, rcn.mem_palette_offset, bin.rom.pal);
+    hex_to_rom(this.rom, rcn.mem_spriteflags_offset, bin.rom.spf);
+    hex_to_rom(this.rom, rcn.mem_sound_offset, bin.rom.snd);
+    hex_to_rom(this.rom, rcn.mem_music_offset, bin.rom.mus);
+
+    // Change from music track count and next to used bit and flags
+    if(bin.version < 3) {
+      for(let music = 0; music < rcn.music_count; music++) {
+        const music_offset = rcn.mem_music_offset + music * 4;
+        const track_count = (this.rom[music_offset] >> 6) + 1;
+        const next =
+            ((this.rom[music_offset + 1] >> 6) << 4)
+          + ((this.rom[music_offset + 2] >> 6) << 2)
+          + ((this.rom[music_offset + 3] >> 6) << 0);
+        for(let track = 0; track < rcn.music_track_count; track++) {
+          this.rom[music_offset + track] &= 0x3f;
+          if(track < track_count) {
+            this.rom[music_offset + track] |= 0x40; // Mark used
+          }
+        }
+        if(next <= music) {
+          const next_offset = rcn.mem_music_offset + next * 4;
+          this.rom[music_offset + 1] |= 0x80; // End loop
+          this.rom[next_offset + 0] |= 0x80; // Begin loop
+        }
+      }
+    }
+
+    // Change from palette mod in RAM to everything palette in ROM
+    if(bin.version < 4) {
+      const pal_off = rcn.mem_palette_offset;
+      for(let c = 15; c >= 0; c--) {
+        this.rom[pal_off+c*4+3] = c;
+        this.rom[pal_off+c*4+2] = this.rom[pal_off+c*3+2];
+        this.rom[pal_off+c*4+1] = this.rom[pal_off+c*3+1];
+        this.rom[pal_off+c*4+0] = this.rom[pal_off+c*3+0];
+      }
+    }
+
+    this.host = bin.host;
+    this.link = bin.link;
+  } else {
+    console.log('Unable to read bin with version: '+bin.version);
+  }
+}
+
+rcn_bin.prototype.to_json = function() {
+  const rom_to_hex = function(rom, offset, size) {
+    const line_size = 32;
+    let hex_lines = [];
+    let hex = '';
+    for(let i = 0; i < size; i++) {
+      hex += ('00'+rom[offset+i].toString(16)).slice(-2);
+
+      if(i % line_size == (line_size - 1) || i == size-1) {
+        hex_lines.push(hex);
+        hex = '';
+      }
+    }
+
+    return hex_lines;
+  }
+
+  let code_lines = this.code.split('\n')
+    // Remove trailing spaces
+    .map(line => line.trimEnd());
+
+  // Remove trailing empty lines
+  while(code_lines.length > 0 && code_lines[code_lines.length-1].length == 0) {
+    code_lines.pop();
+  }
+
+  return {
+    name: this.name,
+    display_name: this.display_name,
+    version: rcn_bin_current_version,
+    code: code_lines,
+    rom: {
+      spr: rom_to_hex(this.rom, rcn.mem_spritesheet_offset, rcn.mem_spritesheet_size),
+      map: rom_to_hex(this.rom, rcn.mem_map_offset, rcn.mem_map_size),
+      pal: rom_to_hex(this.rom, rcn.mem_palette_offset, rcn.mem_palette_size),
+      spf: rom_to_hex(this.rom, rcn.mem_spriteflags_offset, rcn.mem_spriteflags_size),
+      snd: rom_to_hex(this.rom, rcn.mem_sound_offset, rcn.mem_sound_size),
+      mus: rom_to_hex(this.rom, rcn.mem_music_offset, rcn.mem_music_size),
+    },
+    host: this.host,
+    link: this.link,
+  };
+}
+
+rcn_bin.prototype.to_json_text = function() {
+  const json = this.to_json();
+  delete json.name; // Only keep display name
+  delete json.host; // Host information should not be saved outside raccoon
+  delete json.link;
+  return JSON.stringify(json, null, 2);
+}
+
+async function rcn_bin_from_env() {
+  for(let host_id in rcn_hosts) {
+    const host = rcn_hosts[host_id];
+    const link = rcn_get_parameters[host.get_param];
+    if(link) {
+      const data = await host.read({
+        link: link,
+        any: true,
+      });
+      if(data) {
+        const bin = new rcn_bin();
+        bin.from_json(JSON.parse(data.text));
+        bin.host = host_id;
+        bin.link = data.link;
+        return bin;
+      }
+    }
+  }
+  return null;
+}
+
+// Raccoon canvas
+'use strict';
+
+function rcn_canvas(params) {
+  params = params || {};
+
+  this.node = document.createElement('canvas');
+  this.node.rcn_canvas = this;
+
+  this.padding_x = 0;
+  this.padding_y = 0;
+  this.min_vp_mul = 1;
+
+  this.onpostflush = [];
+
+  const gl = this.gl = this.node.getContext('webgl');
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  this.texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, this.texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  this.palette = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, this.palette);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  this.img_program = rcn_gl_create_program(gl, `
+    attribute vec4 vert;
+    varying highp vec2 uv;
+    void main(void) {
+      uv = vert.zw;
+      gl_Position = vec4(vert.xy, 0, 1);
+    }
+  `, `
+    varying highp vec2 uv;
+    uniform sampler2D sampler;
+    uniform highp vec2 tex_size;
+    uniform sampler2D palette;
+
+    void main(void) {
+      lowp float sample = texture2D(sampler, uv).r * 255.0;
+      sample = mod(uv.x * tex_size.x, 2.0) > 1.0
+        ? floor(sample / 16.0)
+        : mod(sample, 16.0);
+      sample = sample / 16.0;
+      lowp vec4 pal = texture2D(palette, vec2(sample, 0.0));
+      gl_FragColor.rgb = pal.rgb;`
+      + (params.ignore_alpha
+      ? `
+      gl_FragColor.a = 1.0;`
+      : `
+      lowp float checker = mod(floor(gl_FragCoord.x / 8.0) + floor(gl_FragCoord.y / 8.0), 2.0);
+      gl_FragColor.a = floor(pal.a * 2.0) == 1.0 ? (checker == 0.0 ? 1.0 : 0.5) : 1.0;`)
+      + `
+    }
+  `);
+  this.color_program = rcn_gl_create_program(gl, `
+    attribute vec4 vert;
+    void main(void) {
+      gl_Position = vec4(vert.xy, 0, 1);
+    }
+  `, `
+    uniform highp vec4 color;
+
+    void main(void) {
+      gl_FragColor = color;
+    }
+  `);
+  this.vbo = rcn_gl_create_array_buffer(gl, new Float32Array([
+    -1, -1, 0, 1,
+    -1, 3, 0, -1,
+    3, -1, 2, 1,
+  ]));
+
+  if(!params.no_palette_init) {
+    this.upload_palette();
+  }
+}
+
+rcn_canvas.prototype.upload_palette = function(palette) {
+  if(!palette) {
+    // Use current bin palette if unspecified
+    palette = rcn_global_bin.rom.slice(rcn.mem_palette_offset, rcn.mem_palette_offset + rcn.mem_palette_size);
+  }
+
+  const gl = this.gl;
+  gl.bindTexture(gl.TEXTURE_2D, this.palette);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, palette.length / 4, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, palette);
+}
+
+rcn_canvas.prototype.upload_pixels = function(pixels) {
+  if(pixels) {
+    this.pixels = pixels;
+  }
+
+  const gl = this.gl;
+  gl.bindTexture(gl.TEXTURE_2D, this.texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, this.width / 2, this.height, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, this.pixels);
+}
+
+rcn_canvas.prototype.draw_quad = function(x, y, width, height, r, g, b, a) {
+  const gl = this.gl;
+
+  gl.viewport(x, this.node.height - height - y, width, height);
+
+  gl.useProgram(this.color_program);
+  gl.uniform4f(gl.getUniformLocation(this.color_program, 'color'), r, g, b, a);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+  gl.vertexAttribPointer(gl.getAttribLocation(this.color_program, 'vert'), 4, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(gl.getAttribLocation(this.color_program, 'vert'));
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+rcn_canvas.prototype.draw_outline = function(x, y, w, h, t, r, g, b, a) {
+  this.draw_quad(x - t, y - t, t, h + t * 2, r, g, b, a);
+  this.draw_quad(x + w, y - t, t, h + t * 2, r, g, b, a);
+  this.draw_quad(x, y - t, w, t, r, g, b, a);
+  this.draw_quad(x, y + h, w, t, r, g, b, a);
+}
+
+rcn_canvas.prototype.flush = function() {
+  if(this.pixels) {
+    const gl = this.gl;
+
+    // Clear all to black
+    gl.viewport(0, 0, this.node.width, this.node.height);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // I think this resets the aspect ratio of the canvas
+    this.node.width = this.width;
+    this.node.height = this.height;
+
+    // Render at the client size
+    const client_width = this.node.clientWidth;
+    const client_height = this.node.clientHeight;
+    this.node.width = client_width;
+    this.node.height = client_height;
+
+    const vp = this.compute_viewport();
+    gl.viewport(vp.x, vp.y, vp.width, vp.height);
+
+    // Set and upload texture
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.palette);
+
+    gl.useProgram(this.img_program);
+    gl.uniform1i(gl.getUniformLocation(this.img_program, 'sampler'), 0);
+    gl.uniform2f(gl.getUniformLocation(this.img_program, 'tex_size'), this.width, this.height);
+    gl.uniform1i(gl.getUniformLocation(this.img_program, 'palette'), 1);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.vertexAttribPointer(gl.getAttribLocation(this.img_program, 'vert'), 4, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(gl.getAttribLocation(this.img_program, 'vert'));
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  for(let ops of this.onpostflush) {
+    ops.apply(this);
+  }
+}
+
+rcn_canvas.prototype.set_size = function(width, height) {
+  if(this.width === width && this.height === height) {
+    // Nothing to do
+    return;
+  }
+
+  this.node.style.minWidth = (width*this.min_vp_mul)+'px';
+  this.node.style.minHeight = (height*this.min_vp_mul)+'px';
+
+  this.width = width;
+  this.height = height;
+  this.pixels = new Uint8Array(width * height / 2);
+}
+
+rcn_canvas.prototype.client_to_texture_coords = function(x, y) {
+  const vp = this.compute_viewport();
+  if(vp.x <= x && vp.y <= y && x < vp.x + vp.width && y < vp.y + vp.height) {
+    return {
+      x: Math.floor((x - vp.x) / vp.mul),
+      y: Math.floor((y - vp.y) / vp.mul),
+    };
+  } else {
+    return null;
+  }
+}
+
+rcn_canvas.prototype.compute_viewport = function() {
+  // We want to render pixel perfect, so we find a viewport size
+  // that is a multiple of the texture size and fits the actual size
+  const inner_width = this.node.width - this.padding_x;
+  const inner_height = this.node.height - this.padding_y;
+  const vp_mul = Math.max(this.min_vp_mul, Math.floor(Math.min(inner_width / this.width, inner_height / this.height)));
+  const vp_width = vp_mul * this.width;
+  const vp_height = vp_mul * this.height;
+  const vp_x = (this.node.width - vp_width) / 2;
+  const vp_y = (this.node.height - vp_height) / 2;
+  return {
+    mul: vp_mul,
+    x: vp_x, y: vp_y,
+    width: vp_width, height: vp_height,
+  };
+}
+
+rcn_canvas.prototype.interaction = function(f) {
+  const canvas = this;
+  let focused = false;
+  const event_callback = function(e) {
+    if(e.buttons > 0) {
+      const canvas_coords = this.getBoundingClientRect();
+      const tex_coords = canvas.client_to_texture_coords(e.clientX - canvas_coords.x, e.clientY - canvas_coords.y);
+      if(tex_coords) {
+        if(e.type == 'mousedown') {
+          focused = true;
+        }
+        if(focused) {
+          f(e, tex_coords);
+        }
+      }
+    } else {
+      focused = false;
+    }
+  }
+  this.node.addEventListener('contextmenu', function(e){e.preventDefault()});
+  this.node.addEventListener('mousedown', event_callback);
+  this.node.addEventListener('mousemove', event_callback);
+}
+
+// Raccoon game mode functionality
+'use strict';
+
+function rcn_start_game_mode(params) {
+  console.log('Starting game mode');
+
+  document.body.classList.add('game');
+  document.body.classList.toggle('touch', rcn_is_touch_device);
+  document.body.classList.toggle('export', !!params.export);
+
+  const viewport_meta = document.createElement('meta');
+  viewport_meta.setAttribute('name', 'viewport');
+  viewport_meta.setAttribute('content', 'user-scalable=no, initial-scale=1, maximum-scale=1, minimum-scale=1, width=device-width, height=device-height, target-densitydpi=device-dpi');
+  document.head.appendChild(viewport_meta);
+
+  const vm = new rcn_vm({
+    no_network: !!params.export,
+  });
+  vm.load_bin(params.bin);
+  document.title = params.bin.display_name;
+  document.body.appendChild(vm.canvas.node);
+  vm.canvas.node.focus();
+
+  if(rcn_is_touch_device) {
+    rcn_create_touch_controls(vm);
+    vm.set_gamepad_layout(0, rcn.gamepad_layout_abxy);
+    document.body.addEventListener('click', function() {
+      rcn_fullscreen(this);
+    });
+  }
+
+  if(!rcn_is_touch_device) {
+    const edit_link = document.createElement('a');
+    edit_link.id = 'edit_link';
+    edit_link.href = location.href + '&edit';
+    edit_link.innerText = 'Open in edit mode';
+    edit_link.target = '_blank';
+    document.body.appendChild(edit_link);
+  }
+}
+
+function rcn_create_touch_controls(vm) {
+  const controls_div = document.createElement('div');
+  controls_div.classList.add('controls');
+
+  const control_axes = document.createElement('div');
+  control_axes.classList.add('axes');
+  const axes_touch_event = function(e) {
+    e.preventDefault();
+    const div_coords = this.getBoundingClientRect();
+    const axes_bits = [false, false, false, false];
+    if(e.type != 'touchend') {
+      for(let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        const div_x = ((touch.clientX - div_coords.x) / div_coords.width) - 0.5;
+        const div_y = ((touch.clientY - div_coords.y) / div_coords.height) - 0.5;
+
+        axes_bits[0] |= (div_x < -0.16);
+        axes_bits[1] |= (div_x > 0.16);
+        axes_bits[2] |= (div_y < -0.16);
+        axes_bits[3] |= (div_y > 0.16);
+      }
+    }
+
+    for(let i = 0; i < 4; i++) {
+      vm.set_gamepad_bit(0, i, axes_bits[i]);
+    }
+  }
+  control_axes.addEventListener('touchstart', axes_touch_event);
+  control_axes.addEventListener('touchmove', axes_touch_event);
+  control_axes.addEventListener('touchend', axes_touch_event);
+  control_axes.addEventListener('contextmenu', function(e) {
+    e.preventDefault()
+  });
+  controls_div.appendChild(control_axes);
+
+  const control_axes_img = document.createElement('img');
+  control_axes_img.src = rcn_resource('src/img/control_axes.svg');
+  control_axes.appendChild(control_axes_img);
+
+  const controls_buttons = document.createElement('div');
+  controls_buttons.classList.add('buttons');
+  const buttons_touch_event = function(e) {
+    e.preventDefault();
+    const div_coords = this.getBoundingClientRect();
+    const buttons_bits = [false, false, false, false];
+    if(e.type != 'touchend') {
+      for(let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        const div_x = ((touch.clientX - div_coords.x) / div_coords.width) - 0.5;
+        const div_y = ((touch.clientY - div_coords.y) / div_coords.height) - 0.5;
+        const in_center_column = div_y > -0.16 && div_y < 0.16;
+        const in_center_line = div_x > -0.16 && div_x < 0.16;
+
+        buttons_bits[2] |= div_x < -0.16 && in_center_column;
+        buttons_bits[1] |= div_x > 0.16 && in_center_column;
+        buttons_bits[3] |= div_y < -0.16 && in_center_line;
+        buttons_bits[0] |= div_y > 0.16 && in_center_line;
+      }
+    }
+
+    for(let i = 0; i < 4; i++) {
+      vm.set_gamepad_bit(0, i+4, !!buttons_bits[i]);
+    }
+  }
+  controls_buttons.addEventListener('touchstart', buttons_touch_event);
+  controls_buttons.addEventListener('touchmove', buttons_touch_event);
+  controls_buttons.addEventListener('touchend', buttons_touch_event);
+  controls_buttons.addEventListener('contextmenu', function(e) {
+    e.preventDefault()
+  });
+  controls_div.appendChild(controls_buttons);
+
+  const control_buttons_img = document.createElement('img');
+  control_buttons_img.src = rcn_resource('src/img/control_buttons.svg');
+  controls_buttons.appendChild(control_buttons_img);
+
+  document.body.appendChild(controls_div);
+}
+
+// WebGL helper functions
+'use strict';
+
+function rcn_gl_create_shader(gl, type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.log('GL: Shader compile error: ' + gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+
+  return shader;
+}
+
+function rcn_gl_create_program(gl, vs_source, fs_source) {
+  const program = gl.createProgram();
+  gl.attachShader(program, rcn_gl_create_shader(gl, gl.VERTEX_SHADER, vs_source));
+  gl.attachShader(program, rcn_gl_create_shader(gl, gl.FRAGMENT_SHADER, fs_source));
+  gl.linkProgram(program);
+  if(!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.log('GL: Program link error: ' + gl.getProgramInfoLog(program));
+    return null;
+  }
+  return program;
+}
+
+function rcn_gl_create_array_buffer(gl, array) {
+  const array_buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, array_buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, array, gl.STATIC_DRAW);
+  return array_buffer;
+}
+
+// Raccoon utility
+// Honestly I don't know where else to put those
+'use strict';
+
+function rcn_fullscreen(e) {
+  (e.requestFullscreen ||
+  e.mozRequestFullScreen || // Firefox
+  e.webkitRequestFullscreen || // Chrome, Safari and Opera
+  e.msRequestFullscreen || // IE/Edge
+  function(){}).call(e);
+}
+
+function html_encode(text) {
+  return text
+  .replace(/&/g, '&amp;')
+  .replace(/"/g, '&quot;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;');
+}
+
+const rcn_is_touch_device =
+  'ontouchstart' in window ||
+  navigator.maxTouchPoints;
+
+// Raccoon virtual machine
+// This is the client that spawns the web worker
+'use strict';
+
+const rcn_key_to_gamepad = {
+  'ArrowLeft': 0, 'ArrowRight': 1, 'ArrowUp': 2, 'ArrowDown': 3,
+  'x': 4, 'c': 5, 'v': 6, 'b': 7,
+  'X': 4, 'C': 5, 'V': 6, 'B': 7,
+};
+
+function rcn_vm(params = {}) {
+  const vm = this;
+
+  if(!params.no_canvas) {
+    this.canvas = new rcn_canvas({
+      ignore_alpha: true,
+      no_palette_init: true,
+    });
+    this.canvas.set_size(128, 128);
+    this.canvas.node.tabIndex = 0; // Means we can focus the canvas and receive input
+    this.canvas.node.addEventListener('keydown', function(e) {
+      if(rcn_key_to_gamepad[e.key] != undefined) {
+        e.preventDefault();
+        const player = vm.get_player_for_gamepad_id('keyboard', rcn.gamepad_layout_xcvb, true);
+        if(player >= 0) {
+          vm.set_gamepad_bit(player, rcn_key_to_gamepad[e.key], true);
+        }
+      }
+    });
+    this.canvas.node.addEventListener('keyup', function(e) {
+      if(rcn_key_to_gamepad[e.key] != undefined) {
+        e.preventDefault();
+        const player = vm.get_player_for_gamepad_id('keyboard', rcn.gamepad_layout_xcvb, true);
+        if(player >= 0) {
+          vm.set_gamepad_bit(player, rcn_key_to_gamepad[e.key], false);
+        }
+      }
+    });
+    this.canvas.node.addEventListener('blur', function() {
+      // Reset keyboard state
+      vm.gamepad_state[0] = 0;
+    });
+    this.dom_element = this.canvas.node;
+  }
+
+  if(params.dom_element) {
+    this.dom_element = params.dom_element;
+  }
+
+  if(!params.no_network) {
+    this.network = new rcn_network();
+  }
+
+  this.reset();
+  this.last_tick = 0;
+
+  const tick = function() {
+    const now = performance.now();
+    if(now > vm.last_tick + 30) {
+      if(!vm.tick()) {
+        return;
+      }
+      vm.last_tick = now;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+rcn_vm.prototype.kill = function() {
+  if(this.worker) {
+    this.worker.onmessage = null;
+    this.worker.terminate();
+    this.worker = null;
+  }
+  if(this.audio) {
+    this.audio.kill();
+    this.audio = null;
+  }
+}
+
+rcn_vm.prototype.tick = function() {
+  if(this.dom_element && !document.body.contains(this.dom_element)) {
+    // The DOM element was removed from the visible DOM, bail
+    this.kill();
+    return false;
+  }
+
+  if(this.worker && !this.paused) {
+    this.update();
+  } else if(this.canvas) {
+    this.canvas.flush();
+  }
+  if(this.worker && this.canvas) {
+    this.draw();
+  }
+  return true;
+}
+
+rcn_vm.prototype.update = function() {
+  this.poll_gamepads();
+
+  this.worker.postMessage({type: 'write', offset: rcn.mem_gamepad_offset, bytes: this.gamepad_state});
+  if(this.network) {
+    this.network.update(this);
+  }
+  this.worker.postMessage({type: 'update'});
+  this.worker.postMessage({type: 'read', name: 'audio', offset: rcn.mem_soundreg_offset, size: rcn.mem_soundreg_size});
+
+  this.gamepad_state.copyWithin(rcn.gamepad_count, 0, rcn.gamepad_count); // Keep copy of previous frame gamepad state
+}
+
+rcn_vm.prototype.draw = function() {
+  this.worker.postMessage({type: 'draw'});
+  this.worker.postMessage({type: 'read', name: 'palette', offset: rcn.mem_palette_offset, size: rcn.mem_palette_size});
+  this.worker.postMessage({type: 'read', name: 'screen', offset: rcn.mem_screen_offset, size: rcn.mem_screen_size});
+}
+
+rcn_vm.prototype.reset = function() {
+  this.kill();
+  this.worker = new Worker(rcn_vm_worker_url);
+  const vm = this;
+  this.worker.onmessage = function(e) { vm.onmessage(e); }
+  this.audio = new rcn_audio();
+  if(this.network) {
+    this.network.reset();
+  }
+  this.gamepad_state = new Uint8Array(rcn.mem_gamepad_size);
+  this.gamepad_mapping = [];
+
+  // Set default gamepad layouts
+  this.set_gamepad_layout(0, rcn.gamepad_layout_xcvb); // Keyboard for first player
+  for(let i = 1; i < rcn.gamepad_count; i++) {
+    this.set_gamepad_layout(i, rcn.gamepad_layout_abxy); // Abxy for the rest
+  }
+}
+
+rcn_vm.prototype.poll_gamepads = function() {
+  if(!navigator.getGamepads) {
+    // Gamepads are unavailable outside of secure contexts
+    return;
+  }
+
+  const gamepads = navigator.getGamepads();
+  for(let i = 0; i < gamepads.length; i++) {
+    const gamepad = gamepads[i];
+    if(!gamepad) {
+      continue;
+    }
+    const state = [
+      gamepad.axes[0] < -0.33,
+      gamepad.axes[0] > +0.33,
+      gamepad.axes[1] < -0.33,
+      gamepad.axes[1] > +0.33,
+      gamepad.buttons[0].pressed,
+      gamepad.buttons[1].pressed,
+      gamepad.buttons[2].pressed,
+      gamepad.buttons[3].pressed,
+    ];
+
+    const create_mapping = state.includes(true);
+    const player = this.get_player_for_gamepad_id(gamepad.id, rcn.gamepad_layout_abxy, create_mapping);
+    if(player >= 0) {
+      for(let i in state) {
+        this.set_gamepad_bit(player, i, state[i]);
+      }
+    }
+  }
+}
+
+rcn_vm.prototype.load_bin = function(bin) {
+  this.reset();
+  this.load_memory(bin.rom);
+  this.load_code(bin.code);
+  this.worker.postMessage({type: 'init'});
+}
+
+rcn_vm.prototype.load_code = function(code) {
+  if(this.network) {
+    this.network.compute_game_hash(code);
+  }
+  this.worker.postMessage({type:'code', code:code});
+}
+
+rcn_vm.prototype.load_memory = function(bytes, offset = 0) {
+  this.worker.postMessage({type: 'write', offset:offset, bytes:bytes});
+}
+
+rcn_vm.prototype.load_memory_from_bin = function(offset, size) {
+  this.load_memory(rcn_global_bin.rom.slice(offset, offset + size), offset);
+}
+
+rcn_vm.prototype.get_player_for_gamepad_id = function(id, layout, create_mapping = false) {
+  let player = this.gamepad_mapping.indexOf(id);
+  if(player < 0 && create_mapping && this.gamepad_mapping.length < rcn.gamepad_count) {
+    player = this.gamepad_mapping.length;
+    this.gamepad_mapping.push(id);
+    this.set_gamepad_layout(player, layout);
+  }
+  return player;
+}
+
+rcn_vm.prototype.set_gamepad_bit = function(player, offset, value) {
+  if(value) {
+    this.gamepad_state[player] |= (1 << offset);
+  } else {
+    this.gamepad_state[player] &= ~(1 << offset);
+  }
+}
+
+rcn_vm.prototype.set_gamepad_layout = function(player, layout) {
+  this.gamepad_state[player + rcn.gamepad_count*2] = layout;
+}
+
+rcn_vm.prototype.set_volume = function(volume) {
+  this.audio.set_volume(volume);
+}
+
+rcn_vm.prototype.onmessage = function(e) {
+  switch(e.data.type) {
+    case 'palette':
+      this.canvas.upload_palette(e.data.bytes);
+      break;
+    case 'screen':
+      if(this.canvas) {
+        this.canvas.upload_pixels(e.data.bytes);
+        this.canvas.flush();
+      }
+      break;
+    case 'audio':
+      this.audio.update(e.data.bytes);
+      break;
+    case 'error':
+      this.kill();
+      break;
+    case 'network':
+      if(this.network) {
+        this.network.on_vm_message(this, e.data);
+      }
+      break;
+  }
+}
+
+// Raccoon virtual machine worker
+// This is the worker script that gets executed inside a web worker
+'use strict';
+
+function rcn_vm_worker_function(rcn) {
+  const rcn_ram_size = rcn.ram_size;
+  const rcn_mem_palette_offset = rcn.mem_palette_offset;
+  const rcn_mem_sound_offset = rcn.mem_sound_offset;
+  const rcn_mem_music_offset = rcn.mem_music_offset;
+  const rcn_mem_gamepad_offset = rcn.mem_gamepad_offset;
+  const rcn_mem_musicstate_offset = rcn.mem_musicstate_offset;
+  const rcn_mem_soundstate_offset = rcn.mem_soundstate_offset;
+  const rcn_mem_soundreg_offset = rcn.mem_soundreg_offset;
+  const rcn_mem_soundreg_size = rcn.mem_soundreg_size;
+  const rcn_mem_screen_offset = rcn.mem_screen_offset;
+  const rcn_mem_screen_size = rcn.mem_screen_size;
+
+  const ram_buffer = new ArrayBuffer(rcn_ram_size);
+  const ram_view = new DataView(ram_buffer);
+  const ram = new Uint8Array(ram_buffer);
+
+  // Keep parts of the API local
+  const _Array = Array;
+  const _console = console;
+  const _Function = Function;
+  const _Math = Math;
+  const _Object = Object;
+  const _postMessage = postMessage;
+  const _self = self;
+  const _String = String;
+
+  // Remove parts of the API
+  Object.getOwnPropertyNames(_self).forEach(function(key) {
+    if(key != 'onmessage') {
+      delete _self[key];
+    }
+  });
+
+  // Local helper functions
+  const sprite_pixel_index = function(x, y) {
+    return (y<<6)+(x>>1);
+  }
+  const screen_pixel_index = function(x, y) {
+    return rcn_mem_screen_offset + sprite_pixel_index(x, y);
+  }
+  const pset_internal = function(x, y, c) {
+    // No bounds-checking, no color palette support
+    const index = screen_pixel_index(x, y);
+    ram[index] = ((x % 2) < 1)
+          ? ((ram[index] & 0xf0) | c)
+          : ((ram[index] & 0x0f) | (c << 4));
+  }
+  const pset_internal_safe = function(x, y, c) {
+    // No color palette support
+    if(x < 0 || x >= 128 || y < 0 || y >= 128) {
+      return;
+    }
+    pset_internal(x, y, c);
+  }
+  const cam_x = function() {
+    return ram_view.getInt16(rcn.mem_cam_offset + 0);
+  }
+  const cam_y = function() {
+    return ram_view.getInt16(rcn.mem_cam_offset + 2);
+  }
+
+  // Raccoon math API
+  const _flr = flr = _Math.floor;
+  const _ceil = ceil = _Math.ceil;
+  const _abs = abs = _Math.abs;
+  const _sign = sign = _Math.sign;
+  const _max = max = _Math.max;
+  const _min = min = _Math.min;
+  mid = function(a, b, c) {
+    return _max(_min(a, b), _min(_max(a, b), c));
+  }
+  sqrt = _Math.sqrt;
+  rnd = r = function(x) {
+    return x ? _Math.floor(_Math.random()*x) : _Math.random();
+  }
+  sin = _Math.sin;
+  cos = _Math.cos;
+  atan2 = _Math.atan2;
+
+  // Raccoon rendering API
+  const _pset = pset = p = function(x, y, c) {
+    x -= cam_x();
+    y -= cam_y();
+    if(x < 0 || x >= 128 || y < 0 || y >= 128) {
+      return;
+    }
+    pset_internal_safe(x, y, _palmget(c));
+  }
+  pget = function(x, y) {
+    if(x < 0 || x >= 128 || y < 0 || y >= 128) {
+      return 0;
+    }
+    const pixel = ram[screen_pixel_index(x, y)];
+    if((x % 2) < 1) {
+      return pixel & 0xf;
+    } else {
+      return pixel >> 4;
+    }
+  }
+  palset = function(i, r, g, b) {
+    ram[rcn_mem_palette_offset+i*4+0] = r;
+    ram[rcn_mem_palette_offset+i*4+1] = g;
+    ram[rcn_mem_palette_offset+i*4+2] = b;
+  }
+  const _palmget = function(c) {
+    return ram[rcn_mem_palette_offset+c*4+3] & 0xf;
+  }
+  palm = function(src, dst) {
+    ram[rcn_mem_palette_offset+src*4+3] = (ram[rcn_mem_palette_offset+src*4+3] & 0xf0) | dst;
+  }
+  const _paltget = function(c) {
+    return (ram[rcn_mem_palette_offset+c*4+3] >> 7) != 0;
+  }
+  palt = function(c, t) {
+    ram[rcn_mem_palette_offset+c*4+3] = (ram[rcn_mem_palette_offset+c*4+3] & 0x0f) | (t ? 0x80 : 0x00);
+  }
+  cls = c = function(c = 0) { // Default color is 0
+    c |= c<<4; // Left and right pixel to same color
+    ram.fill(c, rcn_mem_screen_offset, rcn_mem_screen_offset + rcn_mem_screen_size);
+  }
+  cam = function(x, y) {
+    ram_view.setInt16(rcn.mem_cam_offset + 0, x);
+    ram_view.setInt16(rcn.mem_cam_offset + 2, y);
+  }
+  const _spr = spr = function(n, x, y, ow = 1.0, oh = 1.0, fx = false, fy = false) {
+    x -= cam_x();
+    y -= cam_y();
+
+    // Clip
+    const iw = _max(0, -x / 8);
+    const ih = _max(0, -y / 8);
+    const w = _min(ow, (128 - x) / 8);
+    const h = _min(oh, (128 - y) / 8);
+
+    // Early exit if nothing to draw
+    if(w <= iw || h <= ih) {
+      return;
+    }
+
+    const first_texel_index = ((n & 0xf) << 2) + ((n >> 4) << 9);
+    const owp = ow * 8;
+    const ohp = oh * 8;
+    const iwp = iw * 8;
+    const ihp = ih * 8;
+    const wp = w * 8;
+    const hp = h * 8;
+    for(let i = iwp; i < wp; i++) {
+      for(let j = ihp; j < hp; j++) {
+        // Fetch sprite color
+        const ti = fx ? (owp - i - 1) : i;
+        const tj = fy ? (ohp - j - 1) : j;
+        const tex_index = first_texel_index + sprite_pixel_index(ti, tj);
+        const c = ((ti % 2) < 1)
+          ? (ram[tex_index] & 0xf)
+          : (ram[tex_index] >> 4);
+
+        if(!_paltget(c)) {
+          pset_internal(x + i, y + j, _palmget(c));
+        }
+      }
+    }
+  }
+  const _fget = fget = function(n, f) {
+    const flags = ram[rcn.mem_spriteflags_offset + n];
+    return f !== undefined ? ((flags & (1 << f)) != 0) : flags;
+  }
+  fset = function(n, f, v) {
+    const i = rcn.mem_spriteflags_offset + n;
+    ram[i] = v !== undefined ? (ram[i] & ~(1 << f)) | (v ? (1 << f) : 0) : f;
+  }
+  const _mget = mget = function(celx, cely) {
+    return ram[rcn.mem_map_offset + (cely << 7) + (celx << 0)];
+  }
+  mset = function(celx, cely, n) {
+    ram[rcn.mem_map_offset + (cely << 7) + (celx << 0)] = n;
+  }
+  map = function(celx, cely, sx, sy, celw, celh, layer = 0xff) {
+    for(let x = 0; x < celw; x++) {
+      for(let y = 0; y < celh; y++) {
+        _spr(_mget(celx + x, cely + y), sx + (x << 3), sy + (y << 3));
+      }
+    }
+  }
+  const font = {
+    // Numbers
+    '0':[0,0,1,0,2,0,0,1,2,1,0,2,2,2,0,3,2,3,0,4,1,4,2,4],'1':[1,0,0,1,1,1,1,2,1,3,0,4,1,4,2,4],'2':[0,0,1,0,2,0,2,1,0,2,1,2,2,2,0,3,0,4,1,4,2,4],'3':[0,0,1,0,2,0,2,1,1,2,2,2,2,3,0,4,1,4,2,4],'4':[0,0,2,0,0,1,2,1,0,2,1,2,2,2,2,3,2,4],'5':[0,0,1,0,2,0,0,1,0,2,1,2,2,2,2,3,0,4,1,4,2,4],'6':[0,0,1,0,2,0,0,1,0,2,1,2,2,2,0,3,2,3,0,4,1,4,2,4],'7':[0,0,1,0,2,0,2,1,2,2,2,3,2,4],'8':[0,0,1,0,2,0,0,1,2,1,0,2,1,2,2,2,0,3,2,3,0,4,1,4,2,4],'9':[0,0,1,0,2,0,0,1,2,1,0,2,1,2,2,2,2,3,0,4,1,4,2,4],
+    // Letters
+    A:[1,0,0,1,2,1,0,2,1,2,2,2,0,3,2,3,0,4,2,4],B:[0,0,1,0,0,1,2,1,0,2,1,2,0,3,2,3,0,4,1,4],C:[1,0,2,0,0,1,0,2,0,3,1,4,2,4],D:[0,0,1,0,0,1,2,1,0,2,2,2,0,3,2,3,0,4,1,4],E:[0,0,1,0,2,0,0,1,0,2,1,2,0,3,0,4,1,4,2,4],F:[0,0,1,0,2,0,0,1,0,2,1,2,0,3,0,4],G:[1,0,2,0,0,1,0,2,0,3,2,3,1,4,2,4],H:[0,0,2,0,0,1,2,1,0,2,1,2,2,2,0,3,2,3,0,4,2,4],I:[0,0,1,0,2,0,1,1,1,2,1,3,0,4,1,4,2,4],J:[0,0,1,0,2,0,1,1,1,2,1,3,0,4,1,4],K:[0,0,2,0,0,1,2,1,0,2,1,2,0,3,2,3,0,4,2,4],L:[0,0,0,1,0,2,0,3,0,4,1,4,2,4],M:[0,0,2,0,0,1,1,1,2,1,0,2,2,2,0,3,2,3,0,4,2,4],N:[0,0,1,0,0,1,2,1,0,2,2,2,0,3,2,3,0,4,2,4],O:[1,0,0,1,2,1,0,2,2,2,0,3,2,3,1,4],P:[0,0,1,0,0,1,2,1,0,2,1,2,0,3,0,4],Q:[1,0,0,1,2,1,0,2,2,2,0,3,1,3,1,4,2,4],R:[0,0,1,0,0,1,2,1,0,2,1,2,0,3,2,3,0,4,2,4],S:[1,0,2,0,0,1,1,2,2,3,0,4,1,4],T:[0,0,1,0,2,0,1,1,1,2,1,3,1,4],U:[0,0,2,0,0,1,2,1,0,2,2,2,0,3,2,3,1,4],V:[0,0,2,0,0,1,2,1,0,2,2,2,0,3,1,3,2,3,1,4],W:[0,0,2,0,0,1,2,1,0,2,2,2,0,3,1,3,2,3,0,4,2,4],X:[0,0,2,0,0,1,2,1,1,2,0,3,2,3,0,4,2,4],Y:[0,0,2,0,0,1,2,1,0,2,1,2,2,2,1,3,1,4],Z:[0,0,1,0,2,0,2,1,1,2,0,3,0,4,1,4,2,4],a:[1,2,2,2,0,3,2,3,0,4,1,4,2,4],b:[0,0,0,1,0,2,1,2,0,3,2,3,0,4,1,4],c:[1,2,2,2,0,3,1,4,2,4],d:[2,0,2,1,1,2,2,2,0,3,2,3,1,4,2,4],e:[0,2,1,2,0,3,1,4,3],f:[1,0,0,1,0,2,1,2,0,3,0,4,3],g:[1,2,0,3,2,3,1,4,2,4,2,5,1,6],h:[0,0,0,1,0,2,1,2,0,3,2,3,0,4,2,4],i:[0,0,0,2,0,3,0,4,2],j:[1,0,1,2,1,3,1,4,1,5,0,6,3],k:[0,0,0,1,0,2,2,2,0,3,1,3,0,4,2,4],l:[0,0,0,1,0,2,0,3,0,4,2],m:[0,2,1,2,2,2,0,3,2,3,0,4,2,4],n:[0,2,1,2,0,3,2,3,0,4,2,4],o:[1,2,0,3,2,3,1,4],p:[0,2,1,2,0,3,2,3,0,4,1,4,0,5,0,6],q:[1,2,2,2,0,3,2,3,1,4,2,4,2,5,2,6],r:[1,2,0,3,0,4,3],s:[1,2,2,2,1,3,0,4,1,4],t:[0,0,0,1,1,1,0,2,0,3,1,4,3],u:[0,2,2,2,0,3,2,3,1,4],v:[0,2,2,2,0,3,1,3,2,3,1,4],w:[0,2,2,2,0,3,2,3,0,4,1,4,2,4],x:[0,2,2,2,1,3,0,4,2,4],y:[0,2,2,2,0,3,2,3,1,4,2,4,2,5,1,6],z:[0,2,1,2,1,3,1,4,2,4],
+    // Punctuation
+    '!':[0,0,0,1,0,2,0,4,2],'"':[0,0,2,0,0,1,2,1],'#':[1,0,3,0,0,1,1,1,2,1,3,1,4,1,1,2,3,2,0,3,1,3,2,3,3,3,4,3,1,4,3,4,6],'%':[0,0,2,0,2,1,1,2,0,3,0,4,2,4],'&':[1,0,0,1,2,1,1,2,3,2,0,3,2,3,1,4,3,4,5],'\'':[0,0,0,1,2],'(':[1,0,0,1,0,2,0,3,0,4,1,5,3],')':[0,0,1,1,1,2,1,3,1,4,0,5,3],'*':[0,1,2,1,1,2,0,3,2,3],',':[0,4,0,5,2],'-':[0,3,1,3,2,3],'.':[0,4,2],'/':[2,0,2,1,1,2,1,3,0,4,0,5],':':[0,2,0,4,2],';':[0,2,0,4,0,5,2],'?':[0,0,1,1,0,2,0,4,3],'@':[1,0,0,1,2,1,0,2,2,2,0,3,1,4,2,4],'[':[0,0,1,0,0,1,0,2,0,3,0,4,0,5,1,5,3],'\\':[0,0,0,1,1,2,1,3,2,4,2,5],']':[0,0,1,0,1,1,1,2,1,3,1,4,0,5,1,5,3],'_':[0,5,1,5,2,5],'{':[2,0,1,1,0,2,1,2,1,3,1,4,2,5],'}':[0,0,1,1,1,2,2,2,1,3,1,4,0,5],
+    // Symbols
+    '$':[1,-1,1,0,2,0,0,1,1,2,2,3,0,4,1,4,1,5],'+':[0,2,1,1,1,2,1,3,2,2],'<':[0,2,1,1,1,3,2,0,2,4],'=':[0,1,0,3,1,1,1,3,2,1,2,3],'>':[0,0,0,4,1,1,1,3,2,2],'^':[1,0,0,1,2,1],'`':[0,0,1,1,3],'|':[0,0,0,1,0,2,0,3,0,4,2],'~':[0,3,1,2,2,3,3,2,5],
+    // Buttons
+    '\ue000':[0,-1,1,-1,2,-1,3,-1,4,-1,5,-1,6,-1,0,0,1,0,2,0,4,0,5,0,6,0,0,1,1,1,4,1,5,1,6,1,0,2,6,2,0,3,1,3,4,3,5,3,6,3,0,4,1,4,2,4,4,4,5,4,6,4,0,5,1,5,2,5,3,5,4,5,5,5,6,5,8], // Keyboard left
+    '\ue001':[0,-1,1,-1,2,-1,3,-1,4,-1,5,-1,6,-1,0,0,1,0,2,0,4,0,5,0,6,0,0,1,1,1,2,1,5,1,6,1,0,2,6,2,0,3,1,3,2,3,5,3,6,3,0,4,1,4,2,4,4,4,5,4,6,4,0,5,1,5,2,5,3,5,4,5,5,5,6,5,8], // Keyboard right
+    '\ue002':[0,-1,1,-1,2,-1,3,-1,4,-1,5,-1,6,-1,0,0,1,0,2,0,4,0,5,0,6,0,0,1,1,1,5,1,6,1,0,2,6,2,0,3,1,3,2,3,4,3,5,3,6,3,0,4,1,4,2,4,4,4,5,4,6,4,0,5,1,5,2,5,3,5,4,5,5,5,6,5,8], // Keyboard up
+    '\ue003':[0,-1,1,-1,2,-1,3,-1,4,-1,5,-1,6,-1,0,0,1,0,2,0,4,0,5,0,6,0,0,1,1,1,2,1,4,1,5,1,6,1,0,2,6,2,0,3,1,3,5,3,6,3,0,4,1,4,2,4,4,4,5,4,6,4,0,5,1,5,2,5,3,5,4,5,5,5,6,5,8], // Keyboard down
+    '\ue004':[0,-1,1,-1,2,-1,3,-1,4,-1,5,-1,6,-1,0,0,1,0,3,0,5,0,6,0,0,1,1,1,3,1,5,1,6,1,0,2,1,2,2,2,4,2,5,2,6,2,0,3,1,3,3,3,5,3,6,3,0,4,1,4,3,4,5,4,6,4,0,5,1,5,2,5,3,5,4,5,5,5,6,5,8], // Keyboard first button
+    '\ue005':[0,-1,1,-1,2,-1,3,-1,4,-1,5,-1,6,-1,0,0,1,0,2,0,5,0,6,0,0,1,1,1,3,1,4,1,5,1,6,1,0,2,1,2,3,2,4,2,5,2,6,2,0,3,1,3,3,3,4,3,5,3,6,3,0,4,1,4,2,4,5,4,6,4,0,5,1,5,2,5,3,5,4,5,5,5,6,5,8], // Keyboard second button
+    '\ue006':[0,-1,1,-1,2,-1,3,-1,4,-1,5,-1,6,-1,0,0,1,0,3,0,5,0,6,0,0,1,1,1,3,1,5,1,6,1,0,2,1,2,3,2,5,2,6,2,0,3,1,3,3,3,5,3,6,3,0,4,1,4,2,4,4,4,5,4,6,4,0,5,1,5,2,5,3,5,4,5,5,5,6,5,8], // Keyboard third button
+    '\ue007':[0,-1,1,-1,2,-1,3,-1,4,-1,5,-1,6,-1,0,0,1,0,4,0,5,0,6,0,0,1,1,1,3,1,5,1,6,1,0,2,1,2,4,2,5,2,6,2,0,3,1,3,3,3,5,3,6,3,0,4,1,4,4,4,5,4,6,4,0,5,1,5,2,5,3,5,4,5,5,5,6,5,8], // Keyboard fourth button
+    '\ue008':[2,-1,3,-1,4,-1,1,0,2,0,4,0,5,0,0,1,1,1,4,1,5,1,6,1,0,2,6,2,0,3,1,3,4,3,5,3,6,3,1,4,2,4,4,4,5,4,2,5,3,5,4,5,8], // Gamepad left
+    '\ue009':[2,-1,3,-1,4,-1,1,0,2,0,4,0,5,0,0,1,1,1,2,1,5,1,6,1,0,2,6,2,0,3,1,3,2,3,5,3,6,3,1,4,2,4,4,4,5,4,2,5,3,5,4,5,8], // Gamepad right
+    '\ue00a':[2,-1,3,-1,4,-1,1,0,2,0,4,0,5,0,0,1,1,1,5,1,6,1,0,2,6,2,0,3,1,3,2,3,4,3,5,3,6,3,1,4,2,4,4,4,5,4,2,5,3,5,4,5,8], // Gamepad up
+    '\ue00b':[2,-1,3,-1,4,-1,1,0,2,0,4,0,5,0,0,1,1,1,2,1,4,1,5,1,6,1,0,2,6,2,0,3,1,3,5,3,6,3,1,4,2,4,4,4,5,4,2,5,3,5,4,5,8], // Gamepad down
+    '\ue00c':[2,-1,3,-1,4,-1,1,0,2,0,4,0,5,0,0,1,1,1,3,1,5,1,6,1,0,2,1,2,5,2,6,2,0,3,1,3,3,3,5,3,6,3,1,4,3,4,5,4,2,5,3,5,4,5,8], // Gamepad first button
+    '\ue00d':[2,-1,3,-1,4,-1,1,0,4,0,5,0,0,1,1,1,3,1,5,1,6,1,0,2,1,2,4,2,5,2,6,2,0,3,1,3,3,3,5,3,6,3,1,4,4,4,5,4,2,5,3,5,4,5,8], // Gamepad second button
+    '\ue00e':[2,-1,3,-1,4,-1,1,0,3,0,5,0,0,1,1,1,3,1,5,1,6,1,0,2,1,2,2,2,4,2,5,2,6,2,0,3,1,3,3,3,5,3,6,3,1,4,3,4,5,4,2,5,3,5,4,5,8], // Gamepad third button
+    '\ue00f':[2,-1,3,-1,4,-1,1,0,3,0,5,0,0,1,1,1,3,1,5,1,6,1,0,2,1,2,5,2,6,2,0,3,1,3,2,3,4,3,5,3,6,3,1,4,2,4,4,4,5,4,2,5,3,5,4,5,8], // Gamepad fourth button
+  };
+  const font_ys = _Object.values(font).map(a => a.filter((v, i) => i&1)).flat();
+  const font_min_y = font_ys.reduce((a, b) => _min(a, b));
+  const font_max_y = font_ys.reduce((a, b) => _max(a, b));
+  print = function(x, y, text, c) {
+    x -= cam_x();
+    y -= cam_y();
+    c = _palmget(c);
+
+    text = _String(text);
+
+    const ox = x;
+    let max_width = 0;
+    for(let i = 0; i < text.length; i++) {
+      const char = text.charAt(i);
+
+      if(char == '\n') {
+        x = ox;
+        y += 8;
+        continue;
+      }
+
+      const g = font[char];
+      const advance = (g && g.length % 2 == 1) ? g[g.length - 1] : 4;
+      if(g && x < 128 && x + advance > 0 &&
+        y + font_min_y < 128 && y + font_max_y >= 0) {
+        for(let j = 0; j < g.length - 1; j += 2) {
+          const gx = g[j+0] + x;
+          const gy = g[j+1] + y;
+          pset_internal_safe(gx, gy, c);
+        }
+      }
+      x += advance;
+      max_width = _max(max_width, x - ox);
+    }
+    return max_width;
+  }
+  const hline = function(x, y, w, c) {
+    // No bounds-checking, no color palette support
+    const cc = c | (c << 4);
+    const x2 = x + (x & 1);
+    if(x != x2) {
+      pset_internal(x, y, c);
+      w -= 1;
+    }
+    if((w & 1) != 0) {
+      pset_internal(x2 + w - 1, y, c);
+    }
+    const index = screen_pixel_index(x2, y);
+    ram.fill(cc, index, index + (w >> 1));
+  }
+  const hline_safe = function(x, y, w, c) {
+    if(y >= 0 && y < 128) {
+      w += _min(0, x);
+      x = _max(0, x);
+      w -= _max(128, x + w) - 128;
+      if(w > 0) {
+        hline(x, y, w, c);
+      }
+    }
+  }
+  line = l = function(x0, y0, x1, y1, c) {
+    x0 = _flr(x0) + 0.5;
+    x1 = _flr(x1) + 0.5;
+    y0 = _flr(y0) + 0.5;
+    y1 = _flr(y1) + 0.5;
+
+    x0 -= cam_x();
+    y0 -= cam_y();
+    x1 -= cam_x();
+    y1 -= cam_y();
+    c = _palmget(c);
+
+    const dx = _flr(x1 - x0);
+    const dy = _flr(y1 - y0);
+    if(dx == 0 && dy == 0) {
+      pset_internal_safe(x0, y0, c);
+    } else if(_abs(dx) >= _abs(dy)) {
+      if(x1 < x0) {
+        let tmp = x1;
+        x1 = x0;
+        x0 = tmp;
+        tmp = y1
+        y1 = y0
+        y0 = tmp
+      }
+      const de = dy / dx;
+      let y = y0;
+      for(let x = x0; x <= x1; x++) {
+        pset_internal_safe(x, y, c);
+        y += de;
+      }
+    } else {
+      if(y1 < y0) {
+        let tmp = x1;
+        x1 = x0;
+        x0 = tmp;
+        tmp = y1
+        y1 = y0
+        y0 = tmp
+      }
+      const de = dx / dy;
+      let x = x0;
+      for(let y = y0; y <= y1; y++) {
+        pset_internal_safe(x, y, c);
+        x += de;
+      }
+    }
+  }
+  rect = function(x, y, w, h, c) {
+    x -= cam_x();
+    y -= cam_y();
+    c = _palmget(c);
+
+    x <<= 0;
+    y <<= 0;
+    w <<= 0;
+    h <<= 0;
+    for(let i = 0; i < w; i++) {
+      pset_internal_safe(x + i, y, c);
+      pset_internal_safe(x + i, y + h - 1, c);
+    }
+    for(let i = 1; i < h - 1; i++) {
+      pset_internal_safe(x, y + i, c);
+      pset_internal_safe(x + w - 1, y + i, c);
+    }
+  }
+  rectfill = function(x, y, w, h, c) {
+    x -= cam_x();
+    y -= cam_y();
+
+    x <<= 0;
+    y <<= 0;
+    w <<= 0;
+    h <<= 0;
+    w += _min(0, x);
+    x = _max(0, x);
+    h += _min(0, y);
+    y = _max(0, y);
+    w -= _max(128, x + w) - 128;
+    h -= _max(128, y + h) - 128;
+    if(w > 0 && h > 0) {
+      c = _palmget(c);
+      for(let i = 0; i < h; i++) {
+        hline(x, y + i, w, c);
+      }
+    }
+  }
+  circ = function(x, y, r, c) {
+    x -= cam_x();
+    y -= cam_y();
+    c = _palmget(c);
+
+    x <<= 0;
+    y <<= 0;
+    r <<= 0;
+
+    // Bresenham
+    let d = 3 - (2 * r);
+    let ox = 0;
+    let oy = r;
+
+    while(ox <= oy) {
+      pset_internal_safe(x + ox, y + oy, c);
+      pset_internal_safe(x + ox, y - oy, c);
+      pset_internal_safe(x - ox, y + oy, c);
+      pset_internal_safe(x - ox, y - oy, c);
+      pset_internal_safe(x + oy, y + ox, c);
+      pset_internal_safe(x + oy, y - ox, c);
+      pset_internal_safe(x - oy, y + ox, c);
+      pset_internal_safe(x - oy, y - ox, c);
+
+      ox++;
+      if(d < 0) {
+        d += 4 * ox + 6;
+      } else {
+        d += 4 * (ox - oy) + 10;
+        oy--;
+      }
+    }
+  }
+  circfill = function(x, y, r, c) {
+    x -= cam_x();
+    y -= cam_y();
+    c = _palmget(c);
+
+    x <<= 0;
+    y <<= 0;
+    r <<= 0;
+
+    // Bresenham
+    let d = 3 - (2 * r);
+    let ox = 0;
+    let oy = r;
+
+    while(ox <= oy) {
+      hline_safe(x - ox, y + oy, (ox << 1) + 1, c);
+      hline_safe(x - ox, y - oy, (ox << 1) + 1, c);
+      hline_safe(x - oy, y + ox, (oy << 1) + 1, c);
+      hline_safe(x - oy, y - ox, (oy << 1) + 1, c);
+
+      ox++;
+      if(d < 0) {
+        d += 4 * ox + 6;
+      } else {
+        d += 4 * (ox - oy) + 10;
+        oy--;
+      }
+    }
+  }
+
+  // Raccoon sound API
+  const _sfx_stop = function(channel) {
+    const ram_offset = rcn_mem_soundstate_offset + channel * 6;
+    ram.fill(0, ram_offset, ram_offset + 6);
+  }
+  const sfx_update = function() {
+    for(let i = 0; i < 4; i++) {
+      const sreg_offset = rcn_mem_soundreg_offset + i * 4;
+      const state_ram_offset = rcn_mem_soundstate_offset + i * 6;
+      const state_length = ram[state_ram_offset + 2];
+      const state_loops = ram[state_ram_offset + 3];
+      const state_full_length = state_length * state_loops;
+      if(state_full_length == 0) {
+        ram[sreg_offset + 0] &= 0x7f; // Switch off
+        continue;
+      }
+
+      const state_n = ram[state_ram_offset + 0];
+      const snd_offset = rcn_mem_sound_offset + state_n * 66;
+      const period = ram[snd_offset + 0] + 4; // In audio frames
+
+      const state_time = ram_view.getUint16(state_ram_offset + 4);
+      const next_note_full_index = _ceil(state_time / period);
+      const next_note_time = next_note_full_index * period;
+      if(state_time <= next_note_time && next_note_time < state_time + 4) {
+        // Next note should be triggered in the next frame
+        const offset = next_note_time - state_time;
+
+        if(next_note_full_index >= state_full_length) {
+          // We've reached the end of the sfx, stop
+          ram[sreg_offset + 0] = 0x80; // Switch on and period 0
+          ram[sreg_offset + 2] = (offset << 6); // Offset and pitch
+          ram[sreg_offset + 3] = 0; // Volume and effect
+          _sfx_stop(i);
+          continue;
+        } else {
+          const state_offset = ram[state_ram_offset + 1];
+          const next_note_index = next_note_full_index % state_length;
+          const note_offset = snd_offset + 2 + (state_offset + next_note_index) * 2;
+          const note_1 = ram[note_offset + 0];
+          const note_2 = ram[note_offset + 1];
+          ram[sreg_offset + 0] = 0x80 | period; // Switch on and period
+          ram[sreg_offset + 1] = ram[snd_offset + 1]; // Envelope and instrument
+          ram[sreg_offset + 2] = (offset << 6) | (note_1 & 0x3f); // Offset and pitch
+          ram[sreg_offset + 3] = note_2; // Volume and effect
+        }
+      } else {
+        ram[sreg_offset + 0] &= 0x7f; // Switch off
+      }
+
+      ram_view.setUint16(state_ram_offset + 4, state_time + 4);
+    }
+  }
+  const _sfx = sfx = function(n, channel = -1, offset = 0, length = 32, loops = 1) {
+    if(channel < 0) {
+      while(++channel < 3 && ram[rcn_mem_soundstate_offset + channel * 6 + 2] != 0);
+    }
+    const ram_offset = rcn_mem_soundstate_offset + channel * 6;
+    ram[ram_offset] = n; // Sfx index
+    ram[ram_offset + 1] = offset; // In notes
+    ram[ram_offset + 2] = length; // In notes
+    ram[ram_offset + 3] = loops;
+    ram_view.setUint16(ram_offset + 4, 0); // In audio frames (120 per second)
+  }
+  const _mus_state = {
+    get is_playing() { return !!(ram[rcn_mem_musicstate_offset] & 0x80); },
+    stop: function() { ram[rcn_mem_musicstate_offset] = 0; },
+    get n() { return ram[rcn_mem_musicstate_offset] & 0x7f; },
+    set n(v) { ram[rcn_mem_musicstate_offset] = v | 0x80; },
+    get max_time() { return ram_view.getUint16(rcn_mem_musicstate_offset + 1); },
+    set max_time(v) { ram_view.setUint16(rcn_mem_musicstate_offset + 1, v); },
+    get time() { return ram_view.getUint16(rcn_mem_musicstate_offset + 3); },
+    set time(v) { ram_view.setUint16(rcn_mem_musicstate_offset + 3, v); },
+  };
+  const _mus_update = function() {
+    if(!_mus_state.is_playing) return;
+    let max_time = _mus_state.max_time;
+    let n = _mus_state.n;
+    let time = _mus_state.time;
+
+    if(max_time > 0 && time >= max_time) {
+      const mus_index = rcn_mem_music_offset + n * 4;
+      if(ram[mus_index + 1] & 0x80) { // End flag
+        for(let i = n; i >= 0; i--) {
+          if(ram[rcn_mem_music_offset + i * 4 + 0] & 0x80) { // Begin flag
+            _mus_state.n = n = i;
+            break;
+          }
+        }
+      } else if(ram[mus_index + 2] & 0x80) { // Stop flag
+        _mus_state.stop();
+        return;
+      } else {
+        _mus_state.n = n = (n + 1) % rcn.music_count;
+      }
+      _mus_state.time = time = 0;
+    }
+
+    if(time == 0) {
+      const mus_index = rcn.mem_music_offset + n * 4;
+      let tracks = [];
+      max_time = 0;
+      for(let i = 0; i < rcn.music_track_count; i++) {
+        if(ram[mus_index + i] & 0x40) {
+          const track_sound = ram[mus_index + i] & 0x3f;
+          const sound_offset = rcn_mem_sound_offset + track_sound * 66;
+          const period = ram[sound_offset + 0] + 4;
+          max_time = _max(max_time, period * 32);
+          tracks.push({
+            sound: track_sound,
+            period: period * 32,
+          });
+        }
+      }
+      for(let i = 0; i < tracks.length; i++) {
+        _sfx(tracks[i].sound, i, 0, 32, _flr(max_time / tracks[i].period));
+      }
+      _mus_state.max_time = max_time;
+    }
+
+    _mus_state.time = time + 4;
+  }
+  const _mus_stop = function() {
+    const mus_index = rcn.mem_music_offset + _mus_state.n * 4;
+    for(let track = 0; track < rcn.music_track_count; track++) {
+      if(ram[mus_index + track] & 0x40) {
+        _sfx_stop(track);
+      }
+    }
+  }
+  mus = function(n) {
+    if(_mus_state.is_playing) {
+      _mus_stop();
+    }
+    if(n < 0) {
+      _mus_state.stop();
+    } else {
+      _mus_state.n = n;
+      _mus_state.time = 0;
+    }
+  }
+
+  // Raccoon input API
+  btn = b = function(i, p = 0) { // First player by default
+    return (ram[rcn_mem_gamepad_offset + p] & (1 << i)) != 0;
+  }
+  btnp = function(i, p = 0) { // First player by default
+    return (ram[rcn_mem_gamepad_offset + p] & (1 << i)) != 0 &&
+      (ram[rcn_mem_gamepad_offset + p + rcn.gamepad_count] & (1 << i)) == 0;
+  }
+  btns = function(i, p = 0) {
+    const layout = ram[rcn_mem_gamepad_offset + p + rcn.gamepad_count * 2];
+    if(layout == rcn.gamepad_layout_abxy) {
+      i += 8;
+    }
+    return _String.fromCodePoint([0xe000 + i]);
+  }
+
+  // Raccoon network API
+  const _network = {
+    ready: false,
+    group_size: 0,
+    index: 0,
+  };
+  const _network_msg = function(msg) {
+    switch(msg.subtype) {
+      case 'input':
+        _network.input_queues[msg.index].push({input: msg.input, frame: msg.frame});
+        _network.input_queues[msg.index].sort((a, b) => a.frame - b.frame);
+        _network.frames[msg.index] = _max(_network.frames[msg.index], msg.client_frame);
+        _network.input_dirty = true;
+        break;
+      case 'state':
+        if(_network.frames[0] <= msg.frames[0]) {
+          ram.set(msg.bytes, rcn.mem_network_offset);
+          for(let i = 0; i < msg.input_queues.length; i++) {
+            if(_network.index != i) {
+              _network.input_queues[i] = msg.input_queues[i];
+            }
+          }
+          _network.frames = msg.frames;
+          _network.frame_offset_sum += _network.frames[0] - _network.frames[_network.index];
+          _network.frame_offset_div += 1;
+          _network.frame_offset = _Math.round(_network.frame_offset_sum / _network.frame_offset_div);
+          _network.confirmed_frame = msg.frame;
+          _network.state_frame = msg.frame;
+        }
+        break;
+      case 'update':
+        if(!_network.ready && msg.ready) {
+          _network.frame = 0;
+          _network.frame_offset_sum = 0;
+          _network.frame_offset_div = 0;
+          _network.frame_offset = 0;
+          _network.frames = (new _Array(_network.group_size)).fill(0);
+          _network.input_queues = [];
+          for(let i = 0; i < _network.group_size; i++) {
+            _network.input_queues.push([]);
+          }
+          _network.confirmed_state = ram.slice(rcn.mem_network_offset, rcn.mem_network_offset + rcn.mem_network_size);
+          _network.confirmed_frame = 0;
+          _network.state_frame = 0;
+        }
+        _network.ready = msg.ready;
+        _network.index = msg.index;
+        break;
+    }
+  }
+  const _network_update = function() {
+    if(!_network.ready) {
+      return;
+    }
+
+    const index = _network.index;
+    const current_input = ram.slice(rcn.mem_gamepad_offset, rcn.mem_gamepad_offset + rcn.mem_gamepad_size);
+    const latest_input = {
+      frame: _network.frame + _network.frame_offset,
+      input: current_input[0],
+    };
+    _network.input_queues[index].push(latest_input);
+
+    if(index == 0) {
+      _network.frames[0] = _network.frame;
+
+      if(_network.input_dirty) {
+        ram.set(_network.confirmed_state, rcn.mem_network_offset);
+        _network.state_frame = _network.confirmed_frame;
+        _network.input_dirty = false;
+      }
+    } else {
+      _postMessage({
+        type: 'network',
+        subtype: 'input',
+        client_frame: _network.frame,
+        frame: latest_input.frame,
+        input: latest_input.input,
+      });
+    }
+
+    const target_frame = _network.frame + _network.frame_offset;
+    while(_network.state_frame < target_frame) {
+      let confirmed_input = true;
+      for(let p = 0; p < _network.group_size; p++) {
+        const input_queue = _network.input_queues[p];
+        const input_found = input_queue.find(i => i.frame == _network.state_frame);
+        const last_input_found = input_queue.find(i => i.frame == _network.state_frame - 1);
+        let input = 0;
+        let last_input = 0;
+        if(input_found) {
+          input = input_found.input;
+        }
+        if(last_input_found) {
+          last_input = last_input_found.input;
+        }
+        if(!input_found || (_network.state_frame > 0 && !last_input_found)) {
+          confirmed_input = false;
+        }
+        ram[rcn.mem_gamepad_offset + p] = input;
+        ram[rcn.mem_gamepad_offset + p + rcn.gamepad_count] = last_input;
+      }
+
+      _execute_user_func(nupdate);
+
+      _network.state_frame += 1;
+
+      if(index == 0 && _network.state_frame == _network.confirmed_frame + 1 &&
+        (confirmed_input || _network.state_frame < target_frame-10)) {
+        _network.confirmed_state = ram.slice(rcn.mem_network_offset, rcn.mem_network_offset + rcn.mem_network_size);
+        _network.confirmed_frame = _network.state_frame;
+      }
+    }
+
+    // Remove obsolete input
+    for(let p in _network.input_queues) {
+      _network.input_queues[p] = _network.input_queues[p]
+        .filter(i => i.frame >= _network.confirmed_frame - 1);
+    }
+
+    if(index == 0) {
+      _postMessage({
+        type: 'network',
+        subtype: 'state',
+        bytes: _Array.from(_network.confirmed_state),
+        input_queues: _network.input_queues,
+        frames: _network.frames,
+        frame: _network.confirmed_frame,
+      });
+    }
+
+    ram.set(current_input, rcn.mem_gamepad_offset);
+
+    _network.frame += 1;
+  }
+  nconn = function(group_size = 0, group_match = 0) {
+    _network.ready = false;
+    _network.group_size = group_size;
+    _postMessage({
+      type: 'network',
+      subtype: 'connect',
+      group_size: group_size,
+      group_match: group_match,
+    });
+  }
+  nready = function() {
+    return _network.ready;
+  }
+  nindex = function() {
+    return _network.index;
+  }
+
+  // Raccoon memory API
+  memcpy = function(dst, src, len) {
+    ram.copyWithin(dst, src, src + len);
+  }
+  memset = function(dst, val, len) {
+    ram.fill(val, dst, dst + len);
+  }
+  read = function(addr) {
+    return ram[addr];
+  }
+  read16 = function(addr) {
+    return ram_view.getInt16(addr);
+  }
+  read32 = function(addr) {
+    return ram_view.getInt32(addr);
+  }
+  write = function(addr, val) {
+    ram[addr] = val;
+  }
+  write16 = function(addr, val) {
+    ram_view.setInt16(addr, val);
+  }
+  write32 = function(addr, val) {
+    ram_view.setInt32(addr, val);
+  }
+
+  // Raccoon debug API
+  debug = function(msg) {
+    _postMessage({
+      type: 'debug',
+      msg: msg,
+    });
+  }
+
+  const _firefox_stack_line_exp = /^([^@]+)@.+:([0-9]+):[0-9]+$/i;
+  const _chrome_stack_line_exp = /^    at ([^\()]+) \(.+:([0-9]+):[0-9]+\)$/i;
+  const _handle_user_error = function(e) {
+    let stack = [];
+    if(e.stack) {
+      stack = (new _String(e.stack)).split('\n')
+        .map(function(line) {
+          const match =
+            line.match(_firefox_stack_line_exp) ||
+            line.match(_chrome_stack_line_exp);
+          return match && {
+            func: match[1],
+            line: match[2] - 2, // Line numbers are off by 2 for some reason
+          };
+        })
+        // Filter out VM functions
+        .filter(l => l && ![
+          'EventHandlerNonNull*rcn_vm_worker_function',
+          'onmessage',
+          '_execute_user_func',
+          '_make_user_func',
+        ].includes(l.func));
+      for(let i = 0; i < stack.length - 1; i++) {
+        if(stack[i].func == '__'+stack[i+1].func) {
+          stack[i].func = stack[i+1].func;
+          stack.splice(i+1, 1);
+        }
+      }
+    }
+    _postMessage({
+      type: 'error',
+      message: e.message,
+      stack: stack,
+      line: stack.length > 0 && stack[0].line || e.lineNumber - 2,
+    });
+  }
+  const _make_user_func = function(code) {
+    try {
+      return new _Function(code);
+    } catch(e) {
+      _handle_user_error(e);
+      return null
+    }
+  }
+  const _execute_user_func = function(user_func) {
+    if(typeof user_func === 'undefined' || !user_func) {
+      return;
+    }
+    try {
+      user_func();
+    } catch(e) {
+      _handle_user_error(e);
+    }
+  }
+
+  // User-defined functions
+  init = undefined;
+  update = undefined;
+  nupdate = undefined;
+  draw = undefined;
+
+  onmessage = function(e) {
+    switch(e.data.type) {
+      case 'code':
+        let code = e.data.code;
+        // Allow function thing() {} syntax to work as expected
+        // by replacing it with thing = function() {}
+        // Also create an indirection to allow hot reload to work
+        // even when function has been saved somewhere as a value
+        code = code.replace(/function (\w+)(\s*)(\([^\)]*\))/gim, '$1 = function$3 { return __$1$3; }; __$1 = function$3');
+        _execute_user_func(_make_user_func(code));
+        break;
+      case 'init': _execute_user_func(init); break;
+      case 'update':
+        _network_update();
+        _execute_user_func(update);
+        _mus_update();
+        sfx_update();
+        break;
+      case 'draw': _execute_user_func(draw); break;
+      case 'network': _network_msg(e.data); break;
+      case 'write':
+        ram.set(e.data.bytes, e.data.offset);
+        break;
+      case 'read':
+        _postMessage({
+          type: e.data.name,
+          bytes: ram.slice(e.data.offset, e.data.offset + e.data.size),
+        });
+        break;
+    }
+  }
+}
+
+const rcn_vm_worker_url = URL.createObjectURL(new Blob(
+  ['('+rcn_vm_worker_function.toString()+')('+JSON.stringify(rcn)+')'],
+  {type: 'text/javascript'}));
+
+rcn_resources["src/img/control_axes.svg"] = URL.createObjectURL(new Blob(["<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xml:space=\"preserve\"\n  viewBox=\"0 0 100 100\" preserveAspectRatio=\"xMinyMin meet\">\n  <defs>\n    <g id=\"arrow\">\n      <circle r=\"20\" fill=\"#88888888\"/>\n      <polygon points=\"-10,8, 0,-10, 10,8\" fill=\"#ffffff44\"/>\n    </g>\n  </defs>\n\n  <g transform=\"translate(50 20)\"><use xlink:href=\"#arrow\"/></g>\n  <g transform=\"translate(80 50) rotate(90)\"><use xlink:href=\"#arrow\"/></g>\n  <g transform=\"translate(50 80) rotate(180)\"><use xlink:href=\"#arrow\"/></g>\n  <g transform=\"translate(20 50) rotate(270)\"><use xlink:href=\"#arrow\"/></g>\n</svg>\n"],{type: "image/svg+xml"}));
+rcn_resources["src/img/control_buttons.svg"] = URL.createObjectURL(new Blob(["<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xml:space=\"preserve\"\n  viewBox=\"0 0 100 100\" preserveAspectRatio=\"xMinyMin meet\">\n  <style>\n    .label {\n      font: bold 20px sans-serif;\n      fill: #88888888;\n    }\n  </style>\n  <defs>\n    <g id=\"button\">\n      <circle r=\"20\" fill=\"#88888888\"/>\n    </g>\n  </defs>\n\n  <g transform=\"translate(50 80)\">\n    <use xlink:href=\"#button\"/>\n    <text y=\"7\" text-anchor=\"middle\" class=\"label\">A</text>\n  </g>\n  <g transform=\"translate(80 50)\">\n    <use xlink:href=\"#button\"/>\n    <text y=\"7\" text-anchor=\"middle\" class=\"label\">B</text>\n  </g>\n  <g transform=\"translate(20 50)\">\n    <use xlink:href=\"#button\"/>\n    <text y=\"7\" text-anchor=\"middle\" class=\"label\">X</text>\n  </g>\n  <g transform=\"translate(50 20)\">\n    <use xlink:href=\"#button\"/>\n    <text y=\"7\" text-anchor=\"middle\" class=\"label\">Y</text>\n  </g>\n</svg>\n"],{type: "image/svg+xml"}));</script><style type="text/css">* {
+	margin: 0;
+	padding: 0;
+	border: 0;
+	font: inherit;
+	font-size: 14px;
+	color: black;
+	vertical-align: baseline;
+	background-color: transparent;
+	outline: none;
+}
+/* HTML5 display-role reset for older browsers */
+article, aside, details, figcaption, figure,
+footer, header, hgroup, menu, nav, section {
+	display: block;
+}
+ol, ul {
+	list-style: none;
+}
+blockquote, q {
+	quotes: none;
+}
+blockquote:before, blockquote:after,
+q:before, q:after {
+	content: '';
+	content: none;
+}
+table {
+	border-collapse: collapse;
+	border-spacing: 0;
+}
+
+body {
+  background-color: black;
+}
+
+canvas {
+  width: 100%;
+  height: calc(100% - 20px);
+}
+
+.export canvas {
+  height: 100%;
+}
+
+/* Open in edit mode link */
+
+#edit_link {
+  position: fixed;
+  bottom: 0px;
+  width: 100%;
+  display: block;
+  text-align: center;
+  color: white;
+}
+
+/* Hide open in edit mode link in exports */
+
+.export #edit_link {
+  display: none;
+}
+
+/* Generic touch controls */
+
+.controls img {
+  width: 100%;
+  height: 100%;
+}
+
+/* Vertical touch controls */
+
+@media only screen and (orientation: portrait) {
+  .touch canvas {
+    width: 100%;
+    height: 66.6%;
+  }
+
+  .touch .controls {
+    width: 100%;
+    height: 33.4%;
+    position: fixed;
+    bottom: 0px;
+  }
+
+  .touch .controls div {
+    width: 50%;
+    height: 100%;
+  }
+
+  .touch .axes {
+    float: left;
+  }
+
+  .touch .buttons {
+    float: right;
+  }
+}
+
+/* Horizontal touch controls */
+
+@media only screen and (orientation: landscape) {
+  .touch .controls div {
+    position: fixed;
+    bottom: 0px;
+    width: 30%;
+    height: 50%;
+    z-index: 100;
+  }
+
+  .touch .axes {
+    left: 0px;
+  }
+
+  .touch .buttons {
+    right: 0px;
+  }
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+}
+</style></head></html>
