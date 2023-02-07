@@ -2,6 +2,7 @@
   "display_name": "MinnaNoGamu",
   "version": 4,
   "code": [
+    "// this is a comment",
     "const SWIDTH = 127;",
     "const SHEIGHT = 127;",
     "const SWIDTH2 = SWIDTH / 2;",
