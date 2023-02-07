@@ -39,3 +39,9 @@ Press `CTRL + S` and wait for the red outline to disappear.
 Select `Version Control > Push`.
 
 As you are pushing on the main branch, beware of potenttial conflicts.
+
+Try to not remove features added by others unless you are bringing improvements !
+
+## Raccoon pro tips
+
+Use the Layoutbox on the bottom-left to quickly change between editors !
