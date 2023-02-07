@@ -1,5 +1,12 @@
 # minnanogamu
-Collaborative game for fun
+
+Collaborative game for fun.
+
+## Play
+
+The latest version of the game is published to [https://nauja.github.io/minnanogamu/](https://nauja.github.io/minnanogamu/).
+
+Use arrow keys to move, and XCVB for actions.
 
 ## Setup
 
@@ -25,3 +32,10 @@ Click `Okay` in the popup to overwrite your local bin.
 
 ## Contribute changes
 
+Make some changes, you should see `Untitled` outlined in red on the top-right.
+
+Press `CTRL + S` and wait for the red outline to disappear.
+
+Select `Version Control > Push`.
+
+As you are pushing on the main branch, beware of potenttial conflicts.
