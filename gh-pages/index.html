@@ -1,8 +1,6 @@
-<html><head><meta charset="UTF-8"><script type="text/javascript">const rcn_static_bin_json = $RCN_STATIC_BIN;
+<html><head><title>Minna No Gamu</title><meta charset="UTF-8"><script type="text/javascript">const rcn_static_bin_json = $RCN_STATIC_BIN;
 // Basic functionality, bootstrap, config
 'use strict';
-
-document.title = 'raccoon';
 
 const rcn = {
   rom_size: 0x5000, // = 20KiB
@@ -907,7 +905,6 @@ function rcn_start_game_mode(params) {
     no_network: !!params.export,
   });
   vm.load_bin(params.bin);
-  document.title = params.bin.display_name;
   document.body.appendChild(vm.canvas.node);
   vm.canvas.node.focus();
 
